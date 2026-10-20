@@ -8,18 +8,23 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Print colored header
-echo -e "${BLUE}================================${NC}"
-echo -e "${BLUE}   Valyu MCP Setup Assistant    ${NC}"
-echo -e "${BLUE}================================${NC}\n"
+echo -e "${BLUE}======================================${NC}"
+echo -e "${BLUE}   Valyu MCP Setup Assistant   ${NC}"
+echo -e "${BLUE}======================================${NC}\n"
 
-# Detect OS
+# Detect OS and environment paths
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
     OS="Windows"
-    VENV_ACTIVATE=".venv\\Scripts\\activate"
+    # Convert /c/Users/... to Windows C:/Users/... using pwd -W under Git Bash / MSYS
+    CURRENT_DIR=$(pwd -W 2>/dev/null || pwd)
+    # Normalize backslashes to forward slashes for valid JSON in Claude config
+    CURRENT_DIR="${CURRENT_DIR//\\//}"
+    PYTHON_BIN=".venv/Scripts/python.exe"
     CONFIG_PATH="%APPDATA%\\Claude\\claude_desktop_config.json"
 else
     OS="Unix"
-    VENV_ACTIVATE=".venv/bin"
+    CURRENT_DIR=$(pwd)
+    PYTHON_BIN=".venv/bin/python"
     CONFIG_PATH="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
 fi
 
@@ -59,9 +64,6 @@ read -p "> " VALYU_API_KEY
 echo -e "\n${BLUE}Creating .env file...${NC}"
 echo "VALYU_API_KEY=$VALYU_API_KEY" > .env
 
-# Get absolute path of current directory
-CURRENT_DIR=$(pwd)
-
 # Instructions for Claude config
 echo -e "\n${GREEN}Setup complete! 🎉${NC}"
 echo -e "\n${YELLOW}Final steps:${NC}"
@@ -78,7 +80,7 @@ cat << EOF
 {
   "mcpServers": {
     "valyu-mcp": {
-      "command": "$CURRENT_DIR/$VENV_ACTIVATE/python",
+      "command": "$CURRENT_DIR/$PYTHON_BIN",
       "args": ["-u", "$CURRENT_DIR/valyu-mcp.py"],
       "env": {
         "VALYU_API_KEY": "$VALYU_API_KEY"
@@ -86,7 +88,3 @@ cat << EOF
     }
   }
 }
-EOF
-echo -e "${NC}"
-
-echo -e "\n${GREEN}Once completed, you're all set! The Valyu MCP server is ready to use. Restart Claude Desktop to use the new tool.${NC}" 

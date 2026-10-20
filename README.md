@@ -23,7 +23,7 @@ python --version
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/ValyuNetwork/valyu-mcp.git
+git clone https://github.com/valyuAI/valyu-mcp.git
 cd valyu-mcp
 ```
 
@@ -49,7 +49,7 @@ If you prefer to set up manually or the automated setup doesn't work for your en
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/ValyuNetwork/valyu-mcp.git
+git clone https://github.com/valyuAI/valyu-mcp.git
 cd valyu-mcp
 ```
 
