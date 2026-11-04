@@ -5,7 +5,7 @@ import os
 import sys
 
 from mcp.server.fastmcp import FastMCP
-from valyu import Valyu, SearchResponse
+from valyu import Valyu
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True
@@ -18,14 +18,13 @@ valyu: Optional[Valyu] = None
 
 async def _async_valyu_query(
     query: str,
-    vertical: Optional[str] = None,
+    category: Optional[str] = None,
     max_num_results: int = 5,
-    max_price: int = 10,
     relevance_threshold: float = 0.5,
-) -> Optional[SearchResponse]:
+) -> Optional[Any]:
     """
-    Executes a Valyu API query inside a background thread using asyncio.to_thread
-    to prevent blocking the MCP JSON-RPC event loop during concurrent requests.
+    Executes a Valyu search inside a background thread via asyncio.to_thread
+    using the official category IDs.
     """
     if valyu is None:
         logger.error("Valyu client is not initialized.")
@@ -33,7 +32,7 @@ async def _async_valyu_query(
 
     try:
         logger.info(
-            f"Making Valyu request - query: '{query}', vertical: {vertical}, "
+            f"Making Valyu search - query: '{query}', category: {category}, "
             f"max_results: {max_num_results}, threshold: {relevance_threshold}"
         )
 
@@ -41,17 +40,13 @@ async def _async_valyu_query(
             kwargs: Dict[str, Any] = {
                 "query": query,
                 "max_num_results": max_num_results,
-                "max_price": max_price,
+                "relevance_threshold": relevance_threshold,
+                "search_type": "all",
             }
-            if vertical:
-                if hasattr(valyu, "search"):
-                    try:
-                        return valyu.search(data_vertical=vertical, relevance_threshold=relevance_threshold, **kwargs)
-                    except TypeError:
-                        pass
-                return valyu.context(search_type=vertical, query_rewrite=False, **kwargs)
-            else:
-                return valyu.context(search_type="all", query_rewrite=False, **kwargs)
+            if category:
+                kwargs["category"] = category
+
+            return valyu.search(**kwargs)
 
         response = await asyncio.to_thread(_call_api)
         logger.info(f"Received Valyu response with {len(getattr(response, 'results', []) or [])} results")
@@ -61,7 +56,7 @@ async def _async_valyu_query(
         return None
 
 
-def format_valyu_results(data: Optional[SearchResponse]) -> str:
+def format_valyu_results(data: Optional[Any]) -> str:
     """Formats search results into clean markdown context for LLM agents."""
     if not data or not getattr(data, "results", None):
         return "No results found."
@@ -94,12 +89,12 @@ async def valyu_academic_search(
 ) -> str:
     """
     Search academic literature, formal algorithm proofs, arXiv preprints, and computer science papers.
-    Use for: theoretical algorithms, formal verification, ML model architectures, arXiv research.
+    Uses Valyu 'research' category.
     """
     max_results = min(max(1, max_results), 10)
     data = await _async_valyu_query(
         query=query,
-        vertical="academic",
+        category="research",
         max_num_results=max_results,
         relevance_threshold=relevance_threshold,
     )
@@ -113,13 +108,13 @@ async def valyu_biomedical_search(
     query: str, max_results: int = 5, relevance_threshold: float = 0.55
 ) -> str:
     """
-    Search life-sciences literature, clinical trials, and PubMed citations.
-    Use for: biomedical entities, clinical protocols, medical informatics, health diagnostics.
+    Search life-sciences literature, clinical trials, and health datasets.
+    Uses Valyu 'healthcare' category.
     """
     max_results = min(max(1, max_results), 10)
     data = await _async_valyu_query(
         query=query,
-        vertical="biomedical",
+        category="healthcare",
         max_num_results=max_results,
         relevance_threshold=relevance_threshold,
     )
@@ -133,13 +128,13 @@ async def valyu_finance_search(
     query: str, max_results: int = 5, relevance_threshold: float = 0.60
 ) -> str:
     """
-    Search financial filings, regulatory disclosures (SEC 10-K, 10-Q), earnings call transcripts, and corporate disclosures.
-    Use for: ticker filings, compliance checks, fiscal statements, financial metrics.
+    Search financial filings, corporate financials, and disclosures.
+    Uses Valyu 'company' category.
     """
     max_results = min(max(1, max_results), 10)
     data = await _async_valyu_query(
         query=query,
-        vertical="finance",
+        category="company",
         max_num_results=max_results,
         relevance_threshold=relevance_threshold,
     )
@@ -152,12 +147,12 @@ async def valyu_finance_search(
 async def valyu_context(query: str, max_num_results: int = 5) -> str:
     """
     General web and multi-source context search across all standard Valyu indexes.
-    Use as a fallback when queries span multiple disciplines or do not map to academic, biomedical, or finance verticals.
+    Fallback when queries do not require domain categorization.
     """
     max_num_results = min(max(1, max_num_results), 10)
     data = await _async_valyu_query(
         query=query,
-        vertical=None,
+        category=None,
         max_num_results=max_num_results,
     )
     if not data:
