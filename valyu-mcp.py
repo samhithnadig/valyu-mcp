@@ -55,7 +55,6 @@ async def _async_valyu_query(
         logger.error(f"Error making Valyu request: {str(e)}")
         return None
 
-
 def format_valyu_results(data: Optional[Any]) -> str:
     """Formats search results into clean markdown context for LLM agents."""
     if not data or not getattr(data, "results", None):
@@ -64,7 +63,15 @@ def format_valyu_results(data: Optional[Any]) -> str:
     results = []
     for i, result in enumerate(data.results, 1):
         title = getattr(result, "title", "Untitled")
-        content = getattr(result, "content", None) or getattr(result, "description", "No content available.")
+        raw_content = getattr(result, "content", None) or getattr(result, "description", "No content available.")
+        
+        # Guard against structured dict/JSON payloads from specialized endpoints
+        if isinstance(raw_content, dict):
+            import json
+            content = json.dumps(raw_content, indent=2)
+        else:
+            content = str(raw_content).strip()
+
         url = getattr(result, "url", "N/A")
         relevance = getattr(result, "score", None) or getattr(result, "relevance_score", None)
 
@@ -73,7 +80,7 @@ def format_valyu_results(data: Optional[Any]) -> str:
             f"[{i}] {title}\n"
             f"{score_line}"
             f"URL: {url}\n"
-            f"Content: {content.strip()}"
+            f"Content: {content}"
         )
 
     return "\n\n---\n\n".join(results)
