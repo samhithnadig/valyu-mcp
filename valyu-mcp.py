@@ -1,7 +1,11 @@
-from typing import Any, Optional
-from valyu import Valyu, SearchResponse
-from mcp.server.fastmcp import FastMCP
+from typing import Any, Dict, List, Optional
+import asyncio
 import logging
+import os
+import sys
+
+from mcp.server.fastmcp import FastMCP
+from valyu import Valyu, SearchResponse
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", force=True
@@ -9,120 +13,168 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 mcp = FastMCP("valyu-mcp")
-valyu = None
+valyu: Optional[Valyu] = None
 
 
-async def make_valyu_request(
-    query: str, max_num_results: int = 10, max_price: int = 10
+async def _async_valyu_query(
+    query: str,
+    vertical: Optional[str] = None,
+    max_num_results: int = 5,
+    max_price: int = 10,
+    relevance_threshold: float = 0.5,
 ) -> Optional[SearchResponse]:
     """
-    Initiates a request to the Valyu API, incorporating error handling and logging for debugging purposes.
-
-    Parameters:
-    - query (str): The search query to be sent to the Valyu API.
-    - max_num_results (int, optional): The maximum number of results to be returned. Defaults to 10.
-    - max_price (int, optional): The maximum price for the results. Defaults to 10.
-
-    Returns:
-    - Optional[SearchResponse]: The response received from the Valyu API or None if an error occurs.
+    Executes a Valyu API query inside a background thread using asyncio.to_thread
+    to prevent blocking the MCP JSON-RPC event loop during concurrent requests.
     """
+    if valyu is None:
+        logger.error("Valyu client is not initialized.")
+        return None
+
     try:
         logger.info(
-            f"Making Valyu request - query: {query}, max_results: {max_num_results}, max_price: {max_price}"
+            f"Making Valyu request - query: '{query}', vertical: {vertical}, "
+            f"max_results: {max_num_results}, threshold: {relevance_threshold}"
         )
-        response = valyu.context(
-            query=query,
-            search_type="all",
-            max_num_results=max_num_results,
-            max_price=max_price,
-            query_rewrite=False,
-        )
-        logger.info(f"Received Valyu response: {response}")
+
+        def _call_api():
+            kwargs: Dict[str, Any] = {
+                "query": query,
+                "max_num_results": max_num_results,
+                "max_price": max_price,
+            }
+            if vertical:
+                if hasattr(valyu, "search"):
+                    try:
+                        return valyu.search(data_vertical=vertical, relevance_threshold=relevance_threshold, **kwargs)
+                    except TypeError:
+                        pass
+                return valyu.context(search_type=vertical, query_rewrite=False, **kwargs)
+            else:
+                return valyu.context(search_type="all", query_rewrite=False, **kwargs)
+
+        response = await asyncio.to_thread(_call_api)
+        logger.info(f"Received Valyu response with {len(getattr(response, 'results', []) or [])} results")
         return response
     except Exception as e:
         logger.error(f"Error making Valyu request: {str(e)}")
         return None
 
 
-def format_valyu_results(data: SearchResponse) -> str:
-    """
-    Formats the Valyu context results for feeding back to the model as context.
-
-    Parameters:
-    - data (SearchResponse): The SearchResponse object received from the Valyu API.
-
-    Returns:
-    - str: A formatted string containing the Valyu context results.
-    """
-    if not data.results:
+def format_valyu_results(data: Optional[SearchResponse]) -> str:
+    """Formats search results into clean markdown context for LLM agents."""
+    if not data or not getattr(data, "results", None):
         return "No results found."
 
     results = []
     for i, result in enumerate(data.results, 1):
+        title = getattr(result, "title", "Untitled")
+        content = getattr(result, "content", None) or getattr(result, "description", "No content available.")
+        url = getattr(result, "url", "N/A")
+        relevance = getattr(result, "score", None) or getattr(result, "relevance_score", None)
+
+        score_line = f"Relevance Score: {relevance}\n" if relevance is not None else ""
         results.append(
-            f"""Title: {result.title}
-Content: {result.content or result.description}
-URL: {result.url}"""
+            f"[{i}] {title}\n"
+            f"{score_line}"
+            f"URL: {url}\n"
+            f"Content: {content.strip()}"
         )
 
-    formatted_output = "\n\n".join(results)
-    return formatted_output
+    return "\n\n---\n\n".join(results)
+
+
+# ==============================================================================
+# Domain-Specific Vertical Search Tools
+# ==============================================================================
+
+@mcp.tool()
+async def valyu_academic_search(
+    query: str, max_results: int = 5, relevance_threshold: float = 0.55
+) -> str:
+    """
+    Search academic literature, formal algorithm proofs, arXiv preprints, and computer science papers.
+    Use for: theoretical algorithms, formal verification, ML model architectures, arXiv research.
+    """
+    max_results = min(max(1, max_results), 10)
+    data = await _async_valyu_query(
+        query=query,
+        vertical="academic",
+        max_num_results=max_results,
+        relevance_threshold=relevance_threshold,
+    )
+    if not data:
+        return "Unable to fetch academic context from Valyu."
+    return format_valyu_results(data)
 
 
 @mcp.tool()
-async def valyu_context(query: str, max_num_results: int = 10) -> str:
+async def valyu_biomedical_search(
+    query: str, max_results: int = 5, relevance_threshold: float = 0.55
+) -> str:
     """
-    A powerful search tool that provides relevant, up-to-date information from across the web and proprietary data sources.
-    Use this tool whenever you need to:
-    1. Find current information about any topic
-    2. Research specific questions or concepts
-    3. Get context about companies, technologies, or trends
-    4. Verify facts or gather supporting information
-    5. Access real-world data and examples
-
-    Parameters:
-    - query (str): The search query. Be specific and detailed in your query for best results.
-    - max_num_results (int, optional): Maximum number of results to return (default: 10, max: 5)
-
-    Returns:
-    - str: Formatted search results including titles, content, and source URLs.
+    Search life-sciences literature, clinical trials, and PubMed citations.
+    Use for: biomedical entities, clinical protocols, medical informatics, health diagnostics.
     """
-    logger.info(
-        f"Starting valyu_context tool call - query: {query}, max_results: {max_num_results}"
+    max_results = min(max(1, max_results), 10)
+    data = await _async_valyu_query(
+        query=query,
+        vertical="biomedical",
+        max_num_results=max_results,
+        relevance_threshold=relevance_threshold,
     )
+    if not data:
+        return "Unable to fetch biomedical context from Valyu."
+    return format_valyu_results(data)
 
-    try:
-        # Ensure count is within bounds but keep it smaller for faster responses
-        max_num_results = min(max(1, max_num_results), 5)  # Reduced from 20 to 5
 
-        data = await make_valyu_request(query, max_num_results, 10)
-        if not data:
-            logger.error("Failed to get Valyu response")
-            return f"Unable to fetch context from Valyu 🫠 Skill issue."
+@mcp.tool()
+async def valyu_finance_search(
+    query: str, max_results: int = 5, relevance_threshold: float = 0.60
+) -> str:
+    """
+    Search financial filings, regulatory disclosures (SEC 10-K, 10-Q), earnings call transcripts, and corporate disclosures.
+    Use for: ticker filings, compliance checks, fiscal statements, financial metrics.
+    """
+    max_results = min(max(1, max_results), 10)
+    data = await _async_valyu_query(
+        query=query,
+        vertical="finance",
+        max_num_results=max_results,
+        relevance_threshold=relevance_threshold,
+    )
+    if not data:
+        return "Unable to fetch financial context from Valyu."
+    return format_valyu_results(data)
 
-        formatted_results = format_valyu_results(data)
-        logger.info(f"Successfully formatted {len(data.results)} results")
-        return formatted_results
 
-    except Exception as e:
-        logger.error(f"Error in valyu_context: {str(e)}")
-        return f"Error executing valyu_context: {str(e)}"
+@mcp.tool()
+async def valyu_context(query: str, max_num_results: int = 5) -> str:
+    """
+    General web and multi-source context search across all standard Valyu indexes.
+    Use as a fallback when queries span multiple disciplines or do not map to academic, biomedical, or finance verticals.
+    """
+    max_num_results = min(max(1, max_num_results), 10)
+    data = await _async_valyu_query(
+        query=query,
+        vertical=None,
+        max_num_results=max_num_results,
+    )
+    if not data:
+        return "Unable to fetch general context from Valyu."
+    return format_valyu_results(data)
 
 
 if __name__ == "__main__":
-    import os
-
     VALYU_API_KEY = os.getenv("VALYU_API_KEY")
     if not VALYU_API_KEY:
         logger.error("Error: VALYU_API_KEY environment variable is required")
-        exit(1)
+        sys.exit(1)
 
     try:
         valyu = Valyu(api_key=VALYU_API_KEY)
         logger.info("Server initialized successfully with Valyu API key")
-
-        # Initialize and run the server using stdio transport
         mcp.run(transport="stdio")
     except Exception as e:
         logger.error(f"Fatal error running MCP server: {str(e)}")
-        exit(1)
+        sys.exit(1)
